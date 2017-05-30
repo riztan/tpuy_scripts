@@ -1,0 +1,277 @@
+/*
+ * cantv: Permite consultar estado de cuenta de una linea telefonia de cantv
+ *
+ *
+ * Copyright © 2017  Riztan Gutierrez <riztang@gmail.com>
+ *
+ * Este programa es software libre: usted puede redistribuirlo y/o modificarlo 
+ * conforme a los términos de la Licencia Pública General de GNU publicada por
+ * la Fundación para el Software Libre, ya sea la versión 3 de esta Licencia o 
+ * (a su elección) cualquier versión posterior.
+ *
+ * Este programa se distribuye con el deseo de que le resulte útil, pero 
+ * SIN GARANTÍAS DE NINGÚN TIPO; ni siquiera con las garantías implícitas de
+ * COMERCIABILIDAD o APTITUD PARA UN PROPÓSITO DETERMINADO. Para más información, 
+ * consulte la Licencia Pública General de GNU.
+ *
+ * http://www.gnu.org/licenses/
+ *
+ */
+/*
+ *
+ *  Basado en el script de William Cabrera -  http://willicab.com.ve  
+ *
+ *  ver en: https://github.com/willicab/infove-api/blob/master/clases/cantv.php
+ *
+ */
+
+#include "tpy_xbs.ch"
+#include "curl.ch"
+
+#define  COOKIE_FILE   oTpuy:cTempDir+'./micookie.txt'
+
+#define _HTML_INICIO_  385 // -- linea donde aprox comienza el contenido busado
+
+
+Function Cantv( cArea, cTlf, cFile) 
+
+    local oForm
+
+    default cArea := ''
+    default cTlf  := ''
+    default cFile:= oTpuy:cTempDir+"cantv-resp.html"
+
+    SET PUBLIC oForm 
+
+    ::cFile := cFile
+    ::hData := Hash()
+    
+    ::cMoneda := "Bs."
+
+    ::cEntArea := cArea
+    ::cEntTlf  := cTlf
+
+
+    DEFINE WINDOW ::oWnd TITLE 'Edo. de Cuenta. Línea Cantv' ;
+           SIZE 340,320 
+
+        if hb_IsObject( oTPuy:oWnd )
+           ::oWnd:SetParent( oTPuy:oWnd )
+        endif
+
+        DEFINE BOX ::oBox VERTICAL /*EXPAND FILL*/ ;
+               BORDER 6 ;
+               OF ::oWnd
+
+        DEFINE IMAGE ::oImg VALIGN 1 ;
+               FILE oTPuy:cImages+"cantv_banner.png" ;
+               OF ::oBox
+        ::oImg:Adjust(330)
+
+        DEFINE BOX ::oBox2   ;
+               OF ::oBox
+        DEFINE LABEL ::oLabArea TEXT "Código de Area: " ;
+               OF ::oBox2
+        DEFINE ENTRY ::oEntArea VAR ::cEntArea EXPAND ;
+               OF ::oBox2
+
+        DEFINE BOX ::oBox3  OF ::oBox
+        DEFINE LABEL ::oLabTlf TEXT "Nro de Teléfono: " ;
+               OF ::oBox3
+        DEFINE ENTRY ::oEntTlf VAR ::cEntTlf EXPAND ;
+               OF ::oBox3
+
+        DEFINE BUTTON ::oBtn TEXT "Consultar"  ;
+               VALID !::oEntArea:Empty() .and. !::oEntTlf:Empty() ;
+               ACTION __Muestra( oForm ) ;
+               OF ::oBox
+
+        ::cTVResult := MemoRead( ::cFile ) 
+        DEFINE TEXTVIEW ::oTVResult VAR ::cTVResult EXPAND FILL ;
+               OF ::oBox
+        
+
+        ::oWnd:SetResizable(.f.)
+//        ::oWnd:SetTransparency(.1)
+
+       // -- Si se reciben los valores de búsqueda, ejecutamos la consulta.
+       if !Empty( ::cEntArea ) .and. !Empty( ::cEntTlf )
+          __Muestra( oForm )
+       endif
+
+    ACTIVATE WINDOW ::oWnd MODAL CENTER
+
+
+return nil
+
+
+
+/** __Muestra()  Desencadena la búsqueda de la información y
+ *               despliega los datos en un TextView.
+ *
+ */
+procedure __Muestra( oForm )
+
+   local aStruct, aData
+
+   ::hData := Hash()
+   if !__GetData( oForm )
+      MsgAlert( "No hay información para mostrar", "Atención" )
+      return
+   endif
+
+   ::oTVResult:SetText("")
+
+   ::oTVResult:Insert( "Saldo actual:  "                + ::hData["actual"  ] + ::cMoneda + hb_eol() ) 
+   ::oTVResult:Insert( "Fecha de última facturación:  " + ::hData["ult_fact"] + hb_eol() )
+   ::oTVResult:Insert( "Fecha de corte:  "              + ::hData["corte"   ] + hb_eol() )
+   ::oTVResult:Insert( "Fecha de vencimiento:  "        + ::hData["vcmto"   ] + hb_eol() )
+   ::oTVResult:Insert( "Saldo vencido:  "               + ::hData["vencido" ] + ::cMoneda + hb_eol() )
+   ::oTVResult:Insert( "Último pago realizado:  "       + ::hData["ult_pago"] + ::cMoneda + hb_eol() )
+
+return
+
+
+
+
+/** __GetData() Realiza la conexión a la pagina de cantv y envia los datos
+ *              a consultar, guarda la respuesta (html) en un archivo,
+ *              realiza la búsqueda de los datos requeridos y los entrega
+ *              en un Hash de datos.
+ *
+ */
+function __GetData( oForm )
+
+    local agents, cookie := .f.
+    local pCurl, buffer, hFile,hFile2, nRes, nLen
+    local cHtml, i
+    local aHtml, aLine, cValue
+
+    local nArea, nTlf, cFile
+
+    if !hb_IsObject( oForm ) 
+       MsgStop("No se puede realizar la acción.","Problemas")
+       return .f.
+    endif
+   
+    nArea := VAL( ::oEntArea:Get() )
+    nTlf  := VAL( ::oEntTlf:Get() )
+
+
+    if nTlf  = 0 .or. nArea = 0 .or. Empty(::cFile)
+       MsgStop( "Falta información" )
+       return .f.
+    endif
+
+    agents := 'Mozilla/5.0 (X11; U; Linux i686; en-US) AppleWebKit/534.16 '
+    agents += '(KHTML, like Gecko) Chrome/10.0.648.204 Safari/534.16'
+
+    hFile   := file_open( ::cFile )
+
+    if (!cookie) 
+        cookie = "micookie"
+    endif
+
+    cURL = 'http://www.cantv.com.ve/seccion.asp?pid=1&sid=450'
+
+    cParam := "sarea="+ALLTRIM(STR(nArea))+"&stelefono="+ALLTRIM(STR(nTlf))
+
+    pCurl = curl_easy_init()
+
+    curl_easy_setopt(pCurl, CURLOPT_HEADER, 1)
+    curl_easy_setopt(pCurl, CURLOPT_URL, cURL)
+    curl_easy_setopt(pCurl, CURLOPT_POSTFIELDS, cParam)
+    curl_easy_setopt( pCurl, CURLOPT_WRITEDATA , hFile ) 
+  
+    nRes := curl_easy_perform( pCurl )
+
+    if nRes != CURLE_OK
+        MsgAlert( "error " + curl_easy_strerror(nRes), "Problemas" )
+        file_close( hFile )
+        return .f.
+    endif
+    curl_easy_cleanup( pCurl )
+
+    cHtml := MemoRead( ::cFile )
+    nPos := At("Saldo actual", cHtml) 
+    
+    aHtml := hb_aTokens( cHtml, hb_eol() )
+    nLen := LEN(aHtml)
+
+    ::hData := { "actual"      => "",  ;
+                 "ult_fact"    => "",  ;
+                 "corte"       => "",  ;
+                 "vcmto"       => "",  ;
+                 "vencido"     => "",  ;
+                 "ult_pago"    => ""   }
+
+    for i = _HTML_INICIO_ to nLen
+       if Empty(::hData["actual"])
+          ::hData["actual"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "Saldo actual" )
+       endif
+       if Empty(::hData["ult_fact"])
+          ::hData["ult_fact"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "&uacute;ltima facturaci&oacute;n:" )
+       endif
+       if Empty(::hData["corte"])
+          ::hData["corte"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "Fecha corte:" )
+       endif
+       if Empty(::hData["vcmto"])
+          ::hData["vcmto"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "Fecha de vencimiento:" )
+       endif
+       if Empty(::hData["vencido"])
+          ::hData["vcmto"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "Saldo vencido:" )
+       endif
+       if Empty(::hData["ult_pago"])
+          ::hData["ult_pago"] := __Buscar( aHtml, ;
+                                         i,     ;
+                                         "ltimo pago realizado:" )
+       endif
+    next i
+
+//View( ::hData )
+
+return .t.
+
+
+
+/** __Buscar()  Realiza la busqueda del texto y 
+ *              de conseguirlo, busca el valor correspondiente
+ *              en la linea siguiente del arreglo con el contenido
+ *              del HTML
+ */
+Function __Buscar( aHtml, nPos, cCadena )
+   local nPosI := At( cCadena, aHtml[nPos] )
+   local aLine, cValue :=""
+   if nPosI > 0
+      // -- dividimos la linea por el simbolo ">"
+      //    el valor está en la 3ra columna
+      aLine := hb_aTokens( aHtml[ nPos+1 ], ">" )
+
+      cValue := __GetValue( aLine[ 3 ] )
+      //View( cValue )
+   endif
+return cValue
+
+
+/** __GetValue() Finaliza la extracción del valor buscado
+ *               desde la cadena que aún contiene algo de
+ *               basura.
+ */
+Function __GetValue( cLine )
+   local nPosF := At( "<", cLine ) - 1
+return SubStr( cLine, 1, nPosF )
+
+
+
+
+//eof
